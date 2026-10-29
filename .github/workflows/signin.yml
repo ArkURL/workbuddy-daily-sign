@@ -1,0 +1,78 @@
+name: 每日签到
+
+on:
+  schedule:
+    # 北京时间 00:05 与 08:00（GitHub cron 用 UTC）；第二班是兜底，签到接口幂等
+    - cron: "5 16 * * *"
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: workbuddy-signin
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  signin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # 轮换后的凭据存在 Actions Cache 里：key 每次唯一，靠前缀取最新一份
+      - name: 恢复凭据状态
+        uses: actions/cache/restore@v4
+        with:
+          path: .state
+          key: wb-auth-${{ github.run_id }}
+          restore-keys: |
+            wb-auth-
+
+      - name: 签到
+        env:
+          WORKBUDDY_AUTH: ${{ secrets.WORKBUDDY_AUTH }}
+          WORKBUDDY_STATE: .state/auth.json
+          WORKBUDDY_STATE_OUT: .state/auth.json
+        run: |
+          set -o pipefail
+          python3 wb_signin.py auto | tee -a result.jsonl
+
+      - name: 保存凭据状态
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .state
+          key: wb-auth-${{ github.run_id }}
+
+      - name: 失败时开 Issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          report="脚本没有输出结果"
+          if [ -s result.jsonl ]; then
+            report=$(tail -n 1 result.jsonl | jq -r '.report // "无"')
+          fi
+          gh label create signin --color FBCA04 --description "自动签到告警" >/dev/null 2>&1 || true
+          number=$(gh issue list --state open --label signin --json number --jq '.[0].number // empty')
+          body=$(printf '%s\n\n- 结果：%s\n- 运行日志：%s\n- 时间：%s\n\n处理提示：\n\n1. 认证类（AUTH_REJECTED / AUTH_EXPIRED / NO_AUTH）→ 在本机重新运行 python3 tools/extract_local.py --set-secret\n2. NETWORK → 网络或服务端抖动，下一次定时运行会自动重试\n3. 其他 → 打开上面的运行日志看详情' \
+            '自动签到这次没成功。' "$report" "$RUN_URL" "$(date -u '+%Y-%m-%d %H:%M UTC')")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "WorkBuddy 自动签到失败" --label signin --body "$body"
+          fi
+
+      - name: 恢复后关闭提醒
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          number=$(gh issue list --state open --label signin --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue close "$number" --comment "本次签到成功，自动关闭。"
+          fi

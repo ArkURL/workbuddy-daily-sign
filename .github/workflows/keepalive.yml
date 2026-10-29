@@ -1,0 +1,31 @@
+name: 仓库保活
+
+# GitHub 会在仓库连续 60 天没有提交后停用定时工作流。签到本身不产生提交，
+# 所以每月打一个时间戳，保证定时任务不被判定为不活跃。
+
+on:
+  schedule:
+    - cron: "0 3 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 提交时间戳
+        run: |
+          mkdir -p .github
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/keepalive.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive.txt
+          if git diff --cached --quiet; then
+            echo "没有变化，跳过提交"
+          else
+            git commit -m "chore: keepalive $(date -u +%F)"
+            git push
+          fi
