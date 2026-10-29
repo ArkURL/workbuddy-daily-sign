@@ -26,7 +26,7 @@ tools/extract_local.py  ──Secret──▶  取最新凭据（Cache 优先，
 前置：本机装过并**登录过** WorkBuddy 桌面端；有 Python 3 和 [GitHub CLI](https://cli.github.com/)。
 
 ```bash
-git clone https://github.com/<you>/workbuddy-daily-sign.git
+git clone https://github.com/ArkURL/workbuddy-daily-sign.git
 cd workbuddy-daily-sign
 
 python3 tools/extract_local.py                 # 只打印，自己粘到 Secrets
@@ -83,6 +83,15 @@ python3 wb_signin.py doctor    # 离线检查凭据格式，不联网
 | `INACTIVE` | 当前没有签到活动，正常 |
 | `ALREADY` | 今天已经签过了，正常 |
 | Cache 被清空 | 会回落到 Secret 里的初始凭据；如果那份也过期了，Issue 会提醒你重新提取 |
+
+## 换机 / 重新登录后
+
+CI 用的是自己的那一套令牌（每次续期都会轮换），和桌面端互不干扰地跑着。只有这几种情况需要你动手：
+
+- **Issue 报 AUTH_* 且反复失败** → 在本机跑一次 `python3 tools/extract_local.py --set-secret`，然后手动触发一次 workflow。
+- **换了电脑** → 同上，新机器重新导出即可。
+
+Cache 里存的永远是最新那套，Secret 只是初始备份；CI 发现缓存里的令牌被拒，会自动回落到 Secret 重试一次。
 
 ## 已知限制
 
