@@ -86,7 +86,7 @@ optional `enterpriseId`, and `endpoint`.
 ## FAQ
 
 - **Cache evicted?** The script falls back to the secret; you only need to re-export if that one expired too.
-- **Desktop app asks you to log in again?** Expected — refreshing rotates the `refreshToken`, first one wins.
+- **Will the desktop app get logged out?** No. In practice both sides renew independently: CI keeps running while the app still refreshes and stays logged in.
 - **WorkBuddy changes its API?** The run fails and opens an Issue instead of silently skipping.
 - **Is it safe?** No credentials live in this repo. The output of `extract_local.py` is as sensitive as your password.
 
