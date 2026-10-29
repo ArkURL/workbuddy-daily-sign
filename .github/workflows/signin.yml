@@ -40,8 +40,9 @@ jobs:
           set -o pipefail
           python3 wb_signin.py auto | tee -a result.jsonl
 
+      # 只有真的拿到了可用凭据才落盘，避免一次失败的运行把坏凭据写进缓存
       - name: 保存凭据状态
-        if: always()
+        if: always() && hashFiles('.state/auth.json') != ''
         uses: actions/cache/save@v4
         with:
           path: .state

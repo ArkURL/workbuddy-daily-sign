@@ -104,6 +104,21 @@ def validate_state(state):
     state["endpoint"] = endpoint
 
 
+def load_secret_state():
+    """从 WORKBUDDY_AUTH Secret 读凭据；没有就返回 None。"""
+    raw = (os.environ.get("WORKBUDDY_AUTH") or "").strip()
+    if not raw:
+        return None
+    try:
+        state = json.loads(raw)
+    except ValueError:
+        raise SignError("NO_AUTH", "WORKBUDDY_AUTH 不是合法 JSON，请重新提取")
+    if isinstance(state, dict):
+        remember_secret(state.get("accessToken"))
+        remember_secret(state.get("refreshToken"))
+    return state
+
+
 def load_state():
     path = os.environ.get("WORKBUDDY_STATE", "")
     if path and os.path.isfile(path):
@@ -112,21 +127,15 @@ def load_state():
                 state = json.load(handle)
         except (OSError, ValueError) as exc:
             raise SignError("AUTH_ERROR", "状态文件无法读取：%s" % redact(exc))
-        remember_secret(state.get("accessToken"))
-        remember_secret(state.get("refreshToken"))
+        if isinstance(state, dict):
+            remember_secret(state.get("accessToken"))
+            remember_secret(state.get("refreshToken"))
         return state, "state_file"
 
-    raw = (os.environ.get("WORKBUDDY_AUTH") or "").strip()
-    if not raw:
+    state = load_secret_state()
+    if state is None:
         raise SignError("NO_AUTH", "没有任何凭据：请设置 WORKBUDDY_AUTH Secret"
                                    "（在本机跑 tools/extract_local.py 生成）")
-    try:
-        state = json.loads(raw)
-    except ValueError:
-        raise SignError("NO_AUTH", "WORKBUDDY_AUTH 不是合法 JSON，请重新提取")
-    if isinstance(state, dict):
-        remember_secret(state.get("accessToken"))
-        remember_secret(state.get("refreshToken"))
     return state, "secret"
 
 
@@ -498,6 +507,14 @@ def doctor():
     return 0
 
 
+RECOVERABLE = ("AUTH_REJECTED", "AUTH_EXPIRED", "NO_SESSION", "AUTH_ERROR")
+
+
+def run_action(state, action):
+    validate_state(state)
+    return run_status(state) if action == "status" else run_auto(state)
+
+
 def main(argv):
     action = argv[1] if len(argv) > 1 else "auto"
     if action == "doctor":
@@ -510,10 +527,18 @@ def main(argv):
 
     try:
         state, source = load_state()
-        validate_state(state)
-        persist_state(state)  # 首跑就让状态文件落盘，避免 Cache 存了空目录
-        payload = run_status(state) if action == "status" else run_auto(state)
-        persist_state(state)
+        try:
+            payload = run_action(state, action)
+        except SignError as exc:
+            # 状态文件里的凭据可能已经被轮换成废票（例如本地重新提取过），
+            # 这时回落到 Secret 再试一次，让 Cache 自愈。
+            if exc.result not in RECOVERABLE or source != "state_file":
+                raise
+            fallback = load_secret_state()
+            if fallback is None:
+                raise
+            payload = run_action(fallback, action)
+            state = fallback
     except SignError as exc:
         emit({"result": exc.result, "needs_attention": True, "report": redact(exc.report)})
         return 1
@@ -522,6 +547,7 @@ def main(argv):
               "report": "脚本运行异常：%s" % redact(exc)})
         return 1
 
+    persist_state(state)
     emit(payload, extra_out=True)
     return 0
 
