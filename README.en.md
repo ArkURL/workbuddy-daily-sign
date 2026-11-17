@@ -85,6 +85,31 @@ Actions → 每日签到 → Run workflow. A `CLAIMED` or `ALREADY` line in the 
 
 One JSON line per account (with `name`), then a final `SUMMARY` line. Any failure makes the exit code 1.
 
+## Check balances on demand (single-file Go tool)
+
+`wbbalance` is a standalone Go binary with no Python dependency. It reads the local `accounts.json` store and
+prints the **available credit balance** for every account (the `total_credits` in check-in status is cumulative
+check-in credits, not the balance). Tokens are refreshed automatically and written back when near expiry.
+
+```bash
+go build -ldflags="-s -w" -o wbbalance ./cmd/wbbalance
+
+./wbbalance                          # all accounts, table
+./wbbalance --name codebuddy-2       # one account
+./wbbalance --json                   # machine-readable
+./wbbalance --verbose                # expand each credit package
+```
+
+It defaults to `./accounts.json`; use `--store <path>` or `WORKBUDDY_ACCOUNTS_FILE` to override. If the store is
+missing it falls back to `WORKBUDDY_ACCOUNTS` (read-only). Add this to `~/.zshrc` for a one-word command:
+
+```zsh
+wbbal() { cd ~/dev/cicd/github/workbuddy-daily-sign && ./wbbalance "$@"; }
+```
+
+The API is the same one the client uses: `POST /billing/meter/get-user-resource-summary` (no `/v2`);
+`TotalCredits` in the response is the available balance.
+
 ## Credentials
 
 `WORKBUDDY_ACCOUNTS` is an array of `{name, state}`; the old single-account `WORKBUDDY_AUTH` still works

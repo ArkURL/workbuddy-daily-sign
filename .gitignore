@@ -1,6 +1,7 @@
 .state/
 result.jsonl
 accounts.json
+/wbbalance
 __pycache__/
 *.pyc
 .DS_Store

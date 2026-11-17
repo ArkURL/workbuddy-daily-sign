@@ -86,6 +86,34 @@ python3 tools/extract_local.py --set-secret
 
 输出：每个账号一行 JSON（带 `name`），最后一行 `SUMMARY` 汇总；任一账号失败则退出码 1。
 
+## 随时查积分余额（Go 单文件工具）
+
+`wbbalance` 是一个独立的 Go 二进制，不依赖 Python，直接读本地账本 `accounts.json`，
+查询两个账号的**可用积分余额**（注意：签到状态里的 `total_credits` 是累计签到积分，不是余额）。
+令牌临期会自动续期并把新令牌写回账本。
+
+```bash
+# 编译（无第三方依赖）
+go build -ldflags="-s -w" -o wbbalance ./cmd/wbbalance
+
+./wbbalance                          # 所有账号，表格
+./wbbalance --name codebuddy-2       # 只看一个账号
+./wbbalance --json                   # 机器可读
+./wbbalance --verbose                # 展开每个积分包
+```
+
+默认读当前目录的 `accounts.json`，也可 `--store <path>` 或设 `WORKBUDDY_ACCOUNTS_FILE`；
+账本不存在时会回落到环境变量 `WORKBUDDY_ACCOUNTS`（只读，不写回）。
+
+想随时敲一个词就查，把下面这行加进 `~/.zshrc`：
+
+```zsh
+wbbal() { cd ~/dev/cicd/github/workbuddy-daily-sign && ./wbbalance "$@"; }
+```
+
+查询走的是客户端同款接口 `POST /billing/meter/get-user-resource-summary`（无 `/v2`），
+返回 `TotalCredits` 即可用余额。
+
 ## 凭据字段
 
 `WORKBUDDY_ACCOUNTS` 是数组，每个账号一项；旧的 `WORKBUDDY_AUTH`（单账号）仍兼容，可作兜底：
