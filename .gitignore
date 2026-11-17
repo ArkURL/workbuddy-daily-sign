@@ -1,5 +1,6 @@
 .state/
 result.jsonl
+accounts.json
 __pycache__/
 *.pyc
 .DS_Store

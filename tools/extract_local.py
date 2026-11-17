@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""从本机 WorkBuddy 桌面端凭据里解出 accessToken / refreshToken，生成 WORKBUDDY_AUTH。
+"""从本机导出一个或多个账号的 WorkBuddy 凭据，生成 WORKBUDDY_ACCOUNTS。
 
-WorkBuddy 新版把令牌存成 $wbEncrypted 信封（AES-256-GCM），解密必须借客户端自带的
-Electron 运行时，所以本脚本只能在登录过 WorkBuddy 的机器上跑，且只跑一次。
+加密凭据（$wbEncrypted / AES-256-GCM）会借 WorkBuddy 自带的 Electron 运行时解密；
+明文凭据（例如 CodeBuddy CLI 写出的）直接用，不需要客户端。
 
 用法：
-    python3 tools/extract_local.py                  # 打印 JSON（含凭据，别贴到公开的地方）
-    python3 tools/extract_local.py --set-secret     # 直接 gh secret set WORKBUDDY_AUTH
-    python3 tools/extract_local.py --set-secret -n 名字
+    python3 tools/extract_local.py --home ~             --label workbuddy
+    python3 tools/extract_local.py --home ~/codebuddy-2 --label codebuddy-2 --set-secret
+    python3 tools/extract_local.py --list               # 看本地账本里有哪些账号
+    python3 tools/extract_local.py --from-store --set-secret
 
-凭据文件路径可用 WORKBUDDY_AUTH_FILE 覆盖，客户端可执行文件可用 WORKBUDDY_EXE 覆盖。
+--set-secret 会把本地账本 accounts.json 里的全部账号推到 Secret。该文件含明文令牌：
+已在 .gitignore 中，权限 600，绝不提交。
 
 解密链路移植自 88lin/workbuddy-auto-signin（MIT，见 LICENSE）。
 """
@@ -21,12 +23,21 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import time
 
-AUTH_FILE_CANDIDATES = {
-    "darwin": "~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info",
-    "win32": "~/AppData/Roaming/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info",
-    "linux": "~/.local/share/CodeBuddyExtension/Data/Public/auth/Tencent-Cloud.coding-copilot.info",
+AUTH_FILE_RELPATHS = {
+    "darwin": [
+        "Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info",
+        "Library/Application Support/CodeBuddyExtension/Data/Public/auth/Tencent-Cloud.coding-copilot.info",
+    ],
+    "win32": [
+        "AppData/Roaming/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info",
+        "AppData/Roaming/CodeBuddyExtension/Data/Public/auth/Tencent-Cloud.coding-copilot.info",
+    ],
+    "linux": [
+        ".local/share/CodeBuddyExtension/Data/Public/auth/Tencent-Cloud.coding-copilot.info",
+        ".local/share/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info",
+    ],
 }
 
 RUNTIME_CANDIDATES = {
@@ -148,7 +159,8 @@ process.stdin.on('end', () => {
 });
 """
 
-SECRET_NAME = "WORKBUDDY_AUTH"
+SECRET_NAME = "WORKBUDDY_ACCOUNTS"
+STORE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "accounts.json")
 
 
 def die(message):
@@ -156,20 +168,24 @@ def die(message):
     sys.exit(1)
 
 
-def find_auth_file():
-    override = os.environ.get("WORKBUDDY_AUTH_FILE")
+def find_auth_file(home=None, auth_file=None):
+    override = auth_file or os.environ.get("WORKBUDDY_AUTH_FILE")
     if override:
-        path = os.path.expanduser(override)
+        path = os.path.abspath(os.path.expanduser(override))
         if not os.path.isfile(path):
-            die("WORKBUDDY_AUTH_FILE 指向的文件不存在：%s" % path)
+            die("凭据文件不存在：%s" % path)
         return path
-    candidate = AUTH_FILE_CANDIDATES.get(sys.platform)
-    if not candidate:
+
+    home_dir = os.path.abspath(os.path.expanduser(home or "~"))
+    relpaths = AUTH_FILE_RELPATHS.get(sys.platform)
+    if not relpaths:
         die("不支持的平台：%s" % sys.platform)
-    path = os.path.expanduser(candidate)
-    if not os.path.isfile(path):
-        die("没找到登录凭据：%s\n请先登录一次 WorkBuddy 桌面端（或设置 WORKBUDDY_AUTH_FILE）。" % path)
-    return path
+    for relpath in relpaths:
+        path = os.path.join(home_dir, relpath)
+        if os.path.isfile(path):
+            return path
+    die("在 %s 下没找到登录凭据。已查找：\n  %s"
+        % (home_dir, "\n  ".join(os.path.join(home_dir, p) for p in relpaths)))
 
 
 def find_runtime():
@@ -219,8 +235,8 @@ def ms_to_seconds(value):
     return None
 
 
-def build_state():
-    path = find_auth_file()
+def build_state(auth_file=None, home=None):
+    path = find_auth_file(home, auth_file)
     try:
         with open(path, "r", encoding="utf-8") as handle:
             session = json.load(handle)
@@ -266,32 +282,99 @@ def build_state():
     return state
 
 
-def main():
-    parser = argparse.ArgumentParser(description="提取 WorkBuddy 凭据，生成 WORKBUDDY_AUTH")
-    parser.add_argument("--set-secret", action="store_true", help="直接调用 gh secret set 写入仓库 Secret")
-    parser.add_argument("-n", "--name", default=SECRET_NAME, help="Secret 名称（默认 %s）" % SECRET_NAME)
-    parser.add_argument("--repo", default=None, help="配合 --set-secret 指定 owner/repo")
-    args = parser.parse_args()
+def load_store():
+    if not os.path.isfile(STORE_PATH):
+        return []
+    try:
+        with open(STORE_PATH, "r", encoding="utf-8") as handle:
+            entries = json.load(handle)
+    except (OSError, ValueError) as exc:
+        die("本地账本 %s 无法读取：%s" % (STORE_PATH, exc))
+    if not isinstance(entries, list):
+        die("本地账本格式错误，应为数组：%s" % STORE_PATH)
+    return [item for item in entries
+            if isinstance(item, dict) and item.get("name") and isinstance(item.get("state"), dict)]
 
-    state = build_state()
-    line = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
 
-    if not args.set_secret:
-        print(line)
-        sys.stderr.write("\n上面这一行含真实凭据，只粘到 GitHub Secrets，别贴到公开的地方。\n")
-        return 0
+def write_store(entries):
+    tmp = STORE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(entries, handle, ensure_ascii=False)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, STORE_PATH)
 
+
+def upsert_store(name, home, state):
+    entries = [item for item in load_store() if item.get("name") != name]
+    entries.append({"name": name, "home": os.path.abspath(os.path.expanduser(home or "~")),
+                    "state": state})
+    write_store(entries)
+    return entries
+
+
+def show_store(entries):
+    for item in entries:
+        state = item["state"]
+        expiry = state.get("accessExpiresAt")
+        text = time.strftime("%Y-%m-%d", time.localtime(expiry)) if isinstance(expiry, (int, float)) else "?"
+        print("%-14s %-20s 到期 %s" % (item["name"], state.get("domain") or "-", text))
+    if not entries:
+        print("（账本是空的，先用 --home / --label 提取一次）")
+
+
+def push_secret(entries, secret_name, repo):
     gh = shutil.which("gh")
     if not gh:
-        die("没找到 gh 命令，请先安装 GitHub CLI，或去掉 --set-secret 手动设置。")
-    command = [gh, "secret", "set", args.name]
-    if args.repo:
-        command += ["--repo", args.repo]
+        die("没找到 gh 命令，请先安装 GitHub CLI，或去掉 --set-secret 手动设置 Secret。")
+    payload = [{"name": item["name"], "state": item["state"]} for item in entries]
+    line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    command = [gh, "secret", "set", secret_name]
+    if repo:
+        command += ["--repo", repo]
     completed = subprocess.run(command, input=line.encode("utf-8"), stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
     if completed.returncode != 0:
         die("写入 Secret 失败：%s" % completed.stderr.decode("utf-8", "replace").strip()[:400])
-    print("已写入 Secret %s（未回显凭据）。" % args.name)
+    print("已写入 Secret %s（%d 个账号，未回显凭据）。" % (secret_name, len(entries)))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="提取账号凭据，生成本地账本与 WORKBUDDY_ACCOUNTS")
+    parser.add_argument("--home", default="~", help="凭据所属账号的 HOME（默认当前用户）")
+    parser.add_argument("--label", "--name", dest="label", default="workbuddy",
+                        help="账号名，用于报表和账本（默认 workbuddy）")
+    parser.add_argument("--auth-file", default=None, help="直接指定凭据文件路径")
+    parser.add_argument("--set-secret", action="store_true", help="把账本里的全部账号推到 GitHub Secret")
+    parser.add_argument("--secret-name", default=SECRET_NAME, help="Secret 名称（默认 %s）" % SECRET_NAME)
+    parser.add_argument("--repo", default=None, help="配合 --set-secret 指定 owner/repo")
+    parser.add_argument("--from-store", action="store_true", help="不重新解密，直接推送本地账本")
+    parser.add_argument("--list", action="store_true", help="列出本地账本里的账号（不显示令牌）")
+    args = parser.parse_args()
+
+    if args.list:
+        show_store(load_store())
+        return 0
+
+    if args.from_store:
+        entries = load_store()
+        if not entries:
+            die("本地账本为空，先用 --home / --label 提取一次。")
+        if not args.set_secret:
+            show_store(entries)
+            return 0
+        push_secret(entries, args.secret_name, args.repo)
+        return 0
+
+    state = build_state(args.auth_file, args.home)
+    entries = upsert_store(args.label, args.home, state)
+    if not args.set_secret:
+        print(json.dumps(state, ensure_ascii=False, separators=(",", ":")))
+        sys.stderr.write("\n上面这一行含真实凭据；已同时写入本地账本 %s（含明文，勿提交）。\n"
+                         % STORE_PATH)
+        return 0
+
+    push_secret(entries, args.secret_name, args.repo)
+    print("账本现有账号：" + "、".join(item["name"] for item in entries))
     return 0
 
 

@@ -104,52 +104,117 @@ def validate_state(state):
     state["endpoint"] = endpoint
 
 
-def load_secret_state():
-    """从 WORKBUDDY_AUTH Secret 读凭据；没有就返回 None。"""
-    raw = (os.environ.get("WORKBUDDY_AUTH") or "").strip()
-    if not raw:
-        return None
-    try:
-        state = json.loads(raw)
-    except ValueError:
-        raise SignError("NO_AUTH", "WORKBUDDY_AUTH 不是合法 JSON，请重新提取")
-    if isinstance(state, dict):
+# id(state) -> (name, roster_entry, roster)。轮换发生在原 state 上，id 不变，
+# 于是所有深层的 persist_state() 调用点都不需要知道当前是哪个账号。
+STATE_INDEX = {}
+SECRET_STATES = {}
+DEFAULT_NAME = "workbuddy"
+
+
+def _as_roster(payload, default_name=DEFAULT_NAME):
+    """把 Secret / Cache 的内容统一成 [{name, state}, ...]，兼容旧的单 dict。"""
+    if isinstance(payload, dict):
+        if "state" in payload and isinstance(payload["state"], dict):
+            payload = [payload]
+        else:
+            payload = [{"name": default_name, "state": payload}]
+    if not isinstance(payload, list):
+        raise SignError("AUTH_ERROR", "凭据必须是 JSON 对象或数组")
+    roster = []
+    for item in payload:
+        if not isinstance(item, dict) or not isinstance(item.get("state"), dict):
+            raise SignError("AUTH_ERROR", "凭据数组里的账号缺少 state 字段")
+        name = item.get("name") or default_name
+        state = item["state"]
         remember_secret(state.get("accessToken"))
         remember_secret(state.get("refreshToken"))
-    return state
+        roster.append({"name": name, "state": state})
+    return roster
 
 
-def load_state():
+def load_secret_roster():
+    """优先 WORKBUDDY_ACCOUNTS，回落旧的 WORKBUDDY_AUTH。"""
+    raw = (os.environ.get("WORKBUDDY_ACCOUNTS") or "").strip()
+    if raw:
+        try:
+            return _as_roster(json.loads(raw)), "secret"
+        except ValueError:
+            raise SignError("NO_AUTH", "WORKBUDDY_ACCOUNTS 不是合法 JSON，请重新导出")
+    raw = (os.environ.get("WORKBUDDY_AUTH") or "").strip()
+    if raw:
+        try:
+            return _as_roster(json.loads(raw)), "secret"
+        except ValueError:
+            raise SignError("NO_AUTH", "WORKBUDDY_AUTH 不是合法 JSON，请重新导出")
+    return [], "secret"
+
+
+def load_accounts():
+    """返回 [(name, state, source)]：Cache 里的令牌优先，Secret 用来补齐和兜底。"""
+    cached = []
     path = os.environ.get("WORKBUDDY_STATE", "")
     if path and os.path.isfile(path):
         try:
             with open(path, "r", encoding="utf-8") as handle:
-                state = json.load(handle)
+                cached = _as_roster(json.load(handle))
         except (OSError, ValueError) as exc:
             raise SignError("AUTH_ERROR", "状态文件无法读取：%s" % redact(exc))
-        if isinstance(state, dict):
-            remember_secret(state.get("accessToken"))
-            remember_secret(state.get("refreshToken"))
-        return state, "state_file"
 
-    state = load_secret_state()
-    if state is None:
-        raise SignError("NO_AUTH", "没有任何凭据：请设置 WORKBUDDY_AUTH Secret"
+    secret_roster, secret_source = load_secret_roster()
+    SECRET_STATES.clear()
+    for item in secret_roster:
+        SECRET_STATES[item["name"]] = item["state"]
+
+    by_name = {item["name"]: item for item in cached}
+    roster = []
+    for item in secret_roster:
+        hit = by_name.get(item["name"])
+        if hit:
+            roster.append({"name": item["name"], "state": hit["state"]})
+        else:
+            roster.append(item)
+
+    for item in cached:
+        if item["name"] not in SECRET_STATES:
+            roster.append(item)
+
+    if not roster:
+        raise SignError("NO_AUTH", "没有任何凭据：请设置 WORKBUDDY_ACCOUNTS Secret"
                                    "（在本机跑 tools/extract_local.py 生成）")
-    return state, "secret"
+
+    STATE_INDEX.clear()
+    for entry in roster:
+        STATE_INDEX[id(entry["state"])] = (entry["name"], entry, roster)
+    return [(entry["name"], entry["state"],
+             "state_file" if entry["name"] in {i["name"] for i in cached} else secret_source)
+            for entry in roster], roster
+
+
+def register_state(name, state):
+    """回落 Secret 时，让这个 state 的落盘也写回正确的账号条目。"""
+    for entry_name, entry, roster in STATE_INDEX.values():
+        if entry_name == name:
+            entry["state"] = state
+            STATE_INDEX[id(state)] = (name, entry, roster)
+            return roster
+    return None
 
 
 def persist_state(state):
-    """把轮换后的凭据写回状态文件，供 workflow 存进 Cache。"""
+    """把轮换后的凭据写回整个状态数组，供 workflow 存进 Cache。"""
     path = os.environ.get("WORKBUDDY_STATE_OUT") or os.environ.get("WORKBUDDY_STATE")
     if not path:
         return False
+    info = STATE_INDEX.get(id(state))
+    payload = info[2] if info else state
+    if info:
+        info[1]["state"] = state
     directory = os.path.dirname(os.path.abspath(path))
     if directory:
         os.makedirs(directory, exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(state, handle, ensure_ascii=False)
+        json.dump(payload, handle, ensure_ascii=False)
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
     return True
@@ -450,13 +515,16 @@ def run_status(state):
 
 # --------------------------------------------------------------------------- 输出
 
-def write_summary(payload):
+def write_summary(payload, name=None):
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
         return
     icon = {"CLAIMED": ":white_check_mark:", "ALREADY": ":heavy_check_mark:",
             "INACTIVE": ":zzz:"}.get(payload.get("result"), ":warning:")
-    lines = ["### %s WorkBuddy 签到" % icon, "", payload.get("report", ""), ""]
+    title = "### %s %s签到" % (icon, ("%s · " % name) if name else "")
+    lines = [title, "", payload.get("report", ""), ""]
+    if name:
+        lines.append("- 账号：%s" % name)
     if payload.get("result"):
         lines.append("- 结果：%s" % payload["result"])
     if payload.get("credit") is not None:
@@ -473,38 +541,49 @@ def write_summary(payload):
         pass
 
 
-def emit(payload, extra_out=False):
+def emit(payload, extra_out=False, name=None, write_file=True):
     out = dict(payload)
+    if name:
+        out["name"] = name
     if extra_out and isinstance(out.get("status"), dict):
         out["status"] = {k: v for k, v in out["status"].items() if v is not None}
     print(redact(json.dumps(out, ensure_ascii=False)))
     sys.stdout.flush()
-    write_summary(payload)
+    if write_file:
+        write_summary(payload, name)
 
 
 def doctor():
     try:
-        state, source = load_state()
-        validate_state(state)
+        accounts, _ = load_accounts()
     except SignError as exc:
         emit({"result": exc.result, "needs_attention": True, "report": exc.report})
         return 1
+
     now = time.time()
 
     def left(value):
         return None if not isinstance(value, (int, float)) else int(value - now)
 
-    emit({
-        "result": "READY",
-        "needs_attention": False,
-        "report": "凭据格式可用（来源：%s）" % source,
-        "has_refresh_token": bool(state.get("refreshToken")),
-        "access_seconds_left": left(state.get("accessExpiresAt")),
-        "refresh_seconds_left": left(state.get("refreshExpiresAt")),
-        "domain": state.get("domain"),
-        "online_checked": False,
-    })
-    return 0
+    failed = False
+    for name, state, source in accounts:
+        try:
+            validate_state(state)
+        except SignError as exc:
+            emit({"result": exc.result, "needs_attention": True, "report": exc.report}, name=name)
+            failed = True
+            continue
+        emit({
+            "result": "READY",
+            "needs_attention": False,
+            "report": "凭据格式可用（来源：%s）" % source,
+            "has_refresh_token": bool(state.get("refreshToken")),
+            "access_seconds_left": left(state.get("accessExpiresAt")),
+            "refresh_seconds_left": left(state.get("refreshExpiresAt")),
+            "domain": state.get("domain"),
+            "online_checked": False,
+        }, name=name)
+    return 1 if failed else 0
 
 
 RECOVERABLE = ("AUTH_REJECTED", "AUTH_EXPIRED", "NO_SESSION", "AUTH_ERROR")
@@ -513,6 +592,20 @@ RECOVERABLE = ("AUTH_REJECTED", "AUTH_EXPIRED", "NO_SESSION", "AUTH_ERROR")
 def run_action(state, action):
     validate_state(state)
     return run_status(state) if action == "status" else run_auto(state)
+
+
+def run_account(name, state, source, action):
+    """单个账号的完整流程：出错时用 Secret 里的同名账号再试一次。"""
+    try:
+        return run_action(state, action), state
+    except SignError as exc:
+        if exc.result not in RECOVERABLE or source != "state_file":
+            raise
+        fallback = SECRET_STATES.get(name)
+        if fallback is None:
+            raise
+        register_state(name, fallback)
+        return run_action(fallback, action), fallback
 
 
 def main(argv):
@@ -526,30 +619,38 @@ def main(argv):
         return 2
 
     try:
-        state, source = load_state()
-        try:
-            payload = run_action(state, action)
-        except SignError as exc:
-            # 状态文件里的凭据可能已经被轮换成废票（例如本地重新提取过），
-            # 这时回落到 Secret 再试一次，让 Cache 自愈。
-            if exc.result not in RECOVERABLE or source != "state_file":
-                raise
-            fallback = load_secret_state()
-            if fallback is None:
-                raise
-            payload = run_action(fallback, action)
-            state = fallback
+        accounts, _ = load_accounts()
     except SignError as exc:
         emit({"result": exc.result, "needs_attention": True, "report": redact(exc.report)})
         return 1
-    except Exception as exc:  # noqa: BLE001 - 任何未预期异常都要留痕
-        emit({"result": "ERROR", "needs_attention": True,
-              "report": "脚本运行异常：%s" % redact(exc)})
-        return 1
 
-    persist_state(state)
-    emit(payload, extra_out=True)
-    return 0
+    failures = []
+    results = []
+    for name, state, source in accounts:
+        try:
+            payload, final_state = run_account(name, state, source, action)
+            persist_state(final_state)
+        except SignError as exc:
+            payload = {"result": exc.result, "needs_attention": True,
+                       "report": redact(exc.report)}
+        except Exception as exc:  # noqa: BLE001 - 单账号异常不影响其他账号
+            payload = {"result": "ERROR", "needs_attention": True,
+                       "report": "脚本运行异常：%s" % redact(exc)}
+        emit(payload, extra_out=True, name=name)
+        results.append({"name": name, "result": payload.get("result"),
+                        "report": payload.get("report")})
+        if payload.get("needs_attention"):
+            failures.append(name)
+
+    summary = {
+        "result": "SUMMARY",
+        "needs_attention": bool(failures),
+        "report": ("全部成功（%d 个账号）" % len(results) if not failures
+                   else "失败账号：%s" % "、".join(failures)),
+        "accounts": results,
+    }
+    emit(summary, write_file=False)
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

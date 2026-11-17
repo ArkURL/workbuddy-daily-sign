@@ -14,6 +14,7 @@ Automatically claim your daily WorkBuddy credits from the cloud — set it up on
 
 ## Features
 
+- **Multiple accounts** — one workflow checks in every account independently, with a separate Summary section for each
 - **Cloud only** — no machine left on, no desktop app running, no local cron
 - **Self-renewing credentials** — the `refreshToken` rotates on every refresh; the newest pair lives in Actions Cache
 - **Idempotent** — checks the status first, so reruns never double-claim
@@ -24,28 +25,39 @@ Automatically claim your daily WorkBuddy credits from the cloud — set it up on
 ## How it works
 
 ```
-Local (once)                    GitHub Actions (daily)
-extract_local.py  ──Secret──▶   Cache first, Secret as fallback
-  decrypts via desktop runtime    │ refresh token when near expiry
-                                  │ check status → claim if needed
-                                  └ write rotated credentials to Cache
+Local (once per account)        GitHub Actions (daily)
+extract_local.py ──Secret──▶   Cache first, Secret as fallback
+  encrypted tokens need client   │ per account: refresh when near expiry
+  plaintext tokens don't         │ per account: check status → claim if needed
+  writes local accounts.json     └ each account's rotated tokens → Cache
 ```
 
-WorkBuddy stores its tokens as `$wbEncrypted` envelopes (AES-256-GCM). Decrypting them requires the
-client's own Electron runtime, which runners don't have. So credentials are exported once on your machine,
-and from then on the pipeline keeps itself alive with `refreshToken`.
+Desktop tokens are `$wbEncrypted` envelopes (AES-256-GCM) that need the client's Electron runtime to
+decrypt; CodeBuddy CLI tokens are plaintext. Either way you export once locally, and the pipeline keeps
+each account alive with its own `refreshToken`.
 
 ## Quick start
 
-**1. Export credentials** (requires a logged-in WorkBuddy desktop app, Python 3, GitHub CLI)
+**1. Export each account** (requires Python 3 and GitHub CLI)
 
 ```bash
 git clone https://github.com/ArkURL/workbuddy-daily-sign.git
 cd workbuddy-daily-sign
+
+# Account A: desktop HOME
+python3 tools/extract_local.py --home ~ --label workbuddy
+
+# Account B: a different HOME (plaintext credentials, no Electron needed)
+python3 tools/extract_local.py --home ~/codebuddy-2 --label codebuddy-2
+
+# Both are in the local store; push them together
 python3 tools/extract_local.py --set-secret
 ```
 
-No `gh`? Drop `--set-secret` and paste the printed JSON line into a repository secret named `WORKBUDDY_AUTH`.
+If several accounts share one HOME, point `--auth-file` at the exact credential file. Rerun `--set-secret`
+after every change — it pushes the whole store. `--list` shows which accounts are stored without printing tokens.
+
+No `gh`? Build `[{"name":..., "state":{...}}, ...]` from the store and save it as secret `WORKBUDDY_ACCOUNTS`.
 
 **2. Run it once**
 
@@ -63,15 +75,21 @@ Actions → 每日签到 → Run workflow. A `CLAIMED` or `ALREADY` line in the 
 
 | Command | Description |
 |---|---|
-| `python3 wb_signin.py auto` | check in (what the workflow runs) |
-| `python3 wb_signin.py status` | query status only |
+| `python3 wb_signin.py auto` | check in every account (what the workflow runs) |
+| `python3 wb_signin.py status` | query all accounts |
 | `python3 wb_signin.py doctor` | offline credential format check |
+| `python3 tools/extract_local.py --home <dir> --label <name>` | export one account into the local store |
+| `python3 tools/extract_local.py --set-secret` | push every stored account to the secret |
+| `python3 tools/extract_local.py --from-store --set-secret` | push without re-decrypting |
+| `python3 tools/extract_local.py --list` | list stored accounts (no tokens) |
+
+One JSON line per account (with `name`), then a final `SUMMARY` line. Any failure makes the exit code 1.
 
 ## Credentials
 
-`WORKBUDDY_AUTH` is a single JSON line: `uid`, `accessToken` (30 days), `refreshToken` (60 days,
-rotated on every refresh), `accessExpiresAt` / `refreshExpiresAt` (epoch seconds), `domain`,
-optional `enterpriseId`, and `endpoint`.
+`WORKBUDDY_ACCOUNTS` is an array of `{name, state}`; the old single-account `WORKBUDDY_AUTH` still works
+as a fallback. Each `state` has `uid`, `accessToken` (30 days), `refreshToken` (60 days, rotated on every
+refresh), `accessExpiresAt` / `refreshExpiresAt` (epoch seconds), `domain`, optional `enterpriseId`, and `endpoint`.
 
 ## Troubleshooting
 
@@ -82,9 +100,13 @@ optional `enterpriseId`, and `endpoint`.
 | `NETWORK` | transient failure, retried on the next scheduled run |
 | `NO_AUTH` | secret missing or malformed, re-export |
 | `AUTH_REJECTED` / `AUTH_EXPIRED` | token rejected or expired, re-export and update the secret |
+| `SUMMARY` with `needs_attention: true` | at least one account failed; the Issue names which ones |
 
 ## FAQ
 
+- **Do more tokens mean more credits?** Not necessarily. Check-in is per uid — two tokens for the same uid
+  (e.g. desktop and CLI logged into one account) only earn one claim. Check uids with `--list` / `doctor`.
+- **Does one failure block the others?** No. Each account runs independently; failures are named in the Issue.
 - **Cache evicted?** The script falls back to the secret; you only need to re-export if that one expired too.
 - **Will the desktop app get logged out?** No. In practice both sides renew independently: CI keeps running while the app still refreshes and stays logged in.
 - **WorkBuddy changes its API?** The run fails and opens an Issue instead of silently skipping.
