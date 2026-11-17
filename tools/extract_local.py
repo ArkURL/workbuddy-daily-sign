@@ -317,7 +317,8 @@ def show_store(entries):
         state = item["state"]
         expiry = state.get("accessExpiresAt")
         text = time.strftime("%Y-%m-%d", time.localtime(expiry)) if isinstance(expiry, (int, float)) else "?"
-        print("%-14s %-20s 到期 %s" % (item["name"], state.get("domain") or "-", text))
+        print("%-14s %-20s uid %-10s 到期 %s"
+              % (item["name"], state.get("domain") or "-", str(state.get("uid") or "-")[:8], text))
     if not entries:
         print("（账本是空的，先用 --home / --label 提取一次）")
 

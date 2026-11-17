@@ -577,6 +577,7 @@ def doctor():
             "result": "READY",
             "needs_attention": False,
             "report": "凭据格式可用（来源：%s）" % source,
+            "uid": state.get("uid"),
             "has_refresh_token": bool(state.get("refreshToken")),
             "access_seconds_left": left(state.get("accessExpiresAt")),
             "refresh_seconds_left": left(state.get("refreshExpiresAt")),
