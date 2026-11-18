@@ -30,7 +30,7 @@
 extract_local.py ──Secret──▶  Cache 优先，回落 Secret
   加密凭据借客户端运行时解密        │ 逐账号：临期刷新令牌
   明文凭据直接用                    │ 逐账号：查状态 → 未签才领
-  写进本地账本 accounts.json        └ 各账号新凭据写回 Cache
+  写进 ~/.config/…/accounts.json     └ 各账号新凭据写回 Cache
 ```
 
 WorkBuddy 把桌面端令牌存成 `$wbEncrypted` 信封（AES-256-GCM），解密要借客户端自带的 Electron
@@ -88,7 +88,7 @@ python3 tools/extract_local.py --set-secret
 
 ## 随时查积分余额（Go 单文件工具）
 
-`wbbalance` 是一个独立的 Go 二进制，不依赖 Python，直接读本地账本 `accounts.json`，
+`wbbalance` 是一个独立的 Go 二进制，不依赖 Python，直接读本地账本 `~/.config/workbuddy-daily-sign/accounts.json`，
 查询两个账号的**可用积分余额**（注意：签到状态里的 `total_credits` 是累计签到积分，不是余额）。
 令牌临期会自动续期并把新令牌写回账本。
 
@@ -102,13 +102,14 @@ go build -ldflags="-s -w" -o wbbalance ./cmd/wbbalance
 ./wbbalance --verbose                # 展开每个积分包
 ```
 
-默认读当前目录的 `accounts.json`，也可 `--store <path>` 或设 `WORKBUDDY_ACCOUNTS_FILE`；
-账本不存在时会回落到环境变量 `WORKBUDDY_ACCOUNTS`（只读，不写回）。
+默认读 `~/.config/workbuddy-daily-sign/accounts.json`（目录权限 700、文件 600），从任意目录启动都行；
+也可 `--store <path>` 或设 `WORKBUDDY_ACCOUNTS_FILE` 覆盖。账本不存在时回落到环境变量
+`WORKBUDDY_ACCOUNTS`（只读，不写回）。旧位置（仓库根目录的 `accounts.json`）仍兼容。
 
 想随时敲一个词就查，把下面这行加进 `~/.zshrc`：
 
 ```zsh
-wbbal() { cd ~/dev/cicd/github/workbuddy-daily-sign && ./wbbalance "$@"; }
+wbbal() { ~/bin/wbbalance "$@"; }
 ```
 
 查询走的是客户端同款接口 `POST /billing/meter/get-user-resource-summary`（无 `/v2`），
@@ -160,7 +161,7 @@ wbbal() { cd ~/dev/cicd/github/workbuddy-daily-sign && ./wbbalance "$@"; }
 ```
 wb_signin.py                     CI 侧签到客户端（纯标准库，按账号循环）
 tools/extract_local.py           本机多账号凭据导出 + 本地账本
-accounts.json                    本地账本（含明文令牌，已 gitignore，勿提交）
+~/.config/workbuddy-daily-sign/accounts.json   本地账本（含明文令牌，权限 600，勿提交）
 .github/workflows/signin.yml     每日签到 + Cache 轮换 + 失败开 Issue
 .github/workflows/keepalive.yml  每月保活，防止定时任务被停用
 ```

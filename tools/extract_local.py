@@ -11,8 +11,8 @@
     python3 tools/extract_local.py --list               # 看本地账本里有哪些账号
     python3 tools/extract_local.py --from-store --set-secret
 
---set-secret 会把本地账本 accounts.json 里的全部账号推到 Secret。该文件含明文令牌：
-已在 .gitignore 中，权限 600，绝不提交。
+--set-secret 会把本地账本 ~/.config/workbuddy-daily-sign/accounts.json 里的全部账号推到 Secret。
+该文件含明文令牌，不在仓库里，目录 700 / 文件 600，绝不提交。
 
 解密链路移植自 88lin/workbuddy-auto-signin（MIT，见 LICENSE）。
 """
@@ -160,7 +160,8 @@ process.stdin.on('end', () => {
 """
 
 SECRET_NAME = "WORKBUDDY_ACCOUNTS"
-STORE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "accounts.json")
+STORE_PATH = os.path.join(os.path.expanduser("~"), ".config", "workbuddy-daily-sign", "accounts.json")
+LEGACY_STORE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "accounts.json")
 
 
 def die(message):
@@ -283,20 +284,23 @@ def build_state(auth_file=None, home=None):
 
 
 def load_store():
-    if not os.path.isfile(STORE_PATH):
+    # 老位置（仓库根目录的 accounts.json）仍可读，下一次写入会自动迁到 ~/.config
+    path = STORE_PATH if os.path.isfile(STORE_PATH) else LEGACY_STORE_PATH
+    if not os.path.isfile(path):
         return []
     try:
-        with open(STORE_PATH, "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8") as handle:
             entries = json.load(handle)
     except (OSError, ValueError) as exc:
-        die("本地账本 %s 无法读取：%s" % (STORE_PATH, exc))
+        die("本地账本 %s 无法读取：%s" % (path, exc))
     if not isinstance(entries, list):
-        die("本地账本格式错误，应为数组：%s" % STORE_PATH)
+        die("本地账本格式错误，应为数组：%s" % path)
     return [item for item in entries
             if isinstance(item, dict) and item.get("name") and isinstance(item.get("state"), dict)]
 
 
 def write_store(entries):
+    os.makedirs(os.path.dirname(STORE_PATH), mode=0o700, exist_ok=True)
     tmp = STORE_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as handle:
         json.dump(entries, handle, ensure_ascii=False)

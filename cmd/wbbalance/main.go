@@ -197,8 +197,19 @@ func resolveStore(explicit string) (string, bool, error) {
 	if explicit != "" {
 		return expandHome(explicit), false, nil
 	}
-	if fromEnv := os.Getenv("WORKBUDDY_ACCOUNTS_FILE"); fromEnv != "" {
-		return expandHome(fromEnv), false, nil
+	if envPath := os.Getenv("WORKBUDDY_ACCOUNTS_FILE"); envPath != "" {
+		return expandHome(envPath), false, nil
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		configPath := filepath.Join(home, ".config", "workbuddy-daily-sign", "accounts.json")
+		if _, statErr := os.Stat(configPath); statErr == nil {
+			return configPath, false, nil
+		}
+		// 新位置还没有、老仓库里的账本还在时继续用老位置，避免升级后突然查不到
+		if _, statErr := os.Stat("accounts.json"); statErr != nil {
+			return configPath, false, nil
+		}
 	}
 	return "accounts.json", false, nil
 }
@@ -224,7 +235,7 @@ func loadAccounts(path string) ([]account, bool, error) {
 			raw = []byte(envJSON)
 			fromEnv = true
 		} else {
-			return nil, false, fmt.Errorf("找不到账本 %s（也可用 WORKBUDDY_ACCOUNTS 或 --store 指定）", path)
+			return nil, false, fmt.Errorf("找不到账本 %s（可用 --store 或 WORKBUDDY_ACCOUNTS_FILE 指定；也可用 WORKBUDDY_ACCOUNTS）", path)
 		}
 	}
 	var accounts []account

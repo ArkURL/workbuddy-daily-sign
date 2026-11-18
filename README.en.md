@@ -29,7 +29,7 @@ Local (once per account)        GitHub Actions (daily)
 extract_local.py ──Secret──▶   Cache first, Secret as fallback
   encrypted tokens need client   │ per account: refresh when near expiry
   plaintext tokens don't         │ per account: check status → claim if needed
-  writes local accounts.json     └ each account's rotated tokens → Cache
+  writes ~/.config/…/accounts.json └ each account's rotated tokens → Cache
 ```
 
 Desktop tokens are `$wbEncrypted` envelopes (AES-256-GCM) that need the client's Electron runtime to
@@ -87,7 +87,7 @@ One JSON line per account (with `name`), then a final `SUMMARY` line. Any failur
 
 ## Check balances on demand (single-file Go tool)
 
-`wbbalance` is a standalone Go binary with no Python dependency. It reads the local `accounts.json` store and
+`wbbalance` is a standalone Go binary with no Python dependency. It reads `~/.config/workbuddy-daily-sign/accounts.json` and
 prints the **available credit balance** for every account (the `total_credits` in check-in status is cumulative
 check-in credits, not the balance). Tokens are refreshed automatically and written back when near expiry.
 
@@ -100,11 +100,12 @@ go build -ldflags="-s -w" -o wbbalance ./cmd/wbbalance
 ./wbbalance --verbose                # expand each credit package
 ```
 
-It defaults to `./accounts.json`; use `--store <path>` or `WORKBUDDY_ACCOUNTS_FILE` to override. If the store is
-missing it falls back to `WORKBUDDY_ACCOUNTS` (read-only). Add this to `~/.zshrc` for a one-word command:
+It defaults to `~/.config/workbuddy-daily-sign/accounts.json` (directory 700, file 600) and works from any
+directory; use `--store <path>` or `WORKBUDDY_ACCOUNTS_FILE` to override. If the store is missing it falls back
+to `WORKBUDDY_ACCOUNTS` (read-only). The old repo-root path still works. Add this to `~/.zshrc`:
 
 ```zsh
-wbbal() { cd ~/dev/cicd/github/workbuddy-daily-sign && ./wbbalance "$@"; }
+wbbal() { ~/bin/wbbalance "$@"; }
 ```
 
 The API is the same one the client uses: `POST /billing/meter/get-user-resource-summary` (no `/v2`);
