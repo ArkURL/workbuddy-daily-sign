@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 )
 
@@ -155,13 +154,12 @@ func run(storeFlag, filter string, asJSON, verbose bool) error {
 			Packages: len(sum.Packages),
 		})
 		if verbose {
-			fmt.Printf("  [%s]\n", acc.Name)
-			tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(tw, "  积分包\t剩余\t已用\t额度")
+			fmt.Printf("[%s]\n", acc.Name)
+			rows := make([][]string, 0, len(sum.Packages))
 			for _, p := range sum.Packages {
-				fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", p.Code, p.Remain, p.Used, p.Total)
+				rows = append(rows, []string{p.Code, amount(p.Remain), amount(p.Used), amount(p.Total)})
 			}
-			tw.Flush()
+			printTable([]string{"积分包", "剩余", "已用", "额度"}, rows, []bool{false, true, true, true})
 		}
 	}
 
@@ -175,18 +173,19 @@ func run(storeFlag, filter string, asJSON, verbose bool) error {
 		return json.NewEncoder(os.Stdout).Encode(results)
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "账号\tuid\t可用积分\t总额度\t积分包数")
+	rows := make([][]string, 0, len(results))
 	failed := false
 	for _, r := range results {
 		if r.Error != "" {
 			failed = true
-			fmt.Fprintf(tw, "%s\t%s\tERROR\t-\t%s\n", r.Name, r.UID, r.Error)
+			rows = append(rows, []string{r.Name, r.UID, "ERROR", "-", r.Error})
 			continue
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%.2f\t%.2f\t%d\n", r.Name, r.UID, r.Balance, r.Total, r.Packages)
+		rows = append(rows, []string{r.Name, r.UID, fmt.Sprintf("%.2f", r.Balance),
+			fmt.Sprintf("%.2f", r.Total), strconv.Itoa(r.Packages)})
 	}
-	tw.Flush()
+	printTable([]string{"账号", "uid", "可用积分", "总额度", "积分包数"}, rows,
+		[]bool{false, false, true, true, false})
 	if failed {
 		os.Exit(1)
 	}
@@ -411,4 +410,61 @@ func shortUID(uid string) string {
 		return uid[:8]
 	}
 	return uid
+}
+
+// 表头是中文，tabwriter 按字节/符文算宽度会把中文算窄，这里按显示宽度手工对齐。
+func displayWidth(text string) int {
+	width := 0
+	for _, r := range text {
+		if r > 0x7f {
+			width += 2
+		} else {
+			width++
+		}
+	}
+	return width
+}
+
+func printTable(headers []string, rows [][]string, right []bool) {
+	widths := make([]int, len(headers))
+	for i, h := range headers {
+		widths[i] = displayWidth(h)
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			if i < len(widths) && displayWidth(cell) > widths[i] {
+				widths[i] = displayWidth(cell)
+			}
+		}
+	}
+
+	writeRow := func(cells []string) {
+		var line strings.Builder
+		for i, cell := range cells {
+			pad := widths[i] - displayWidth(cell)
+			if i < len(right) && right[i] {
+				line.WriteString(strings.Repeat(" ", pad))
+				line.WriteString(cell)
+			} else {
+				line.WriteString(cell)
+				line.WriteString(strings.Repeat(" ", pad))
+			}
+			if i < len(cells)-1 {
+				line.WriteString("  ") // 列间固定留两格，避免数字列和后面的列粘在一起
+			}
+		}
+		fmt.Println(strings.TrimRight(line.String(), " "))
+	}
+	writeRow(headers)
+	for _, row := range rows {
+		writeRow(row)
+	}
+}
+
+func amount(value string) string {
+	number, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return value
+	}
+	return fmt.Sprintf("%.2f", number)
 }
