@@ -76,6 +76,11 @@ type result struct {
 	Error    string  `json:"error,omitempty"`
 }
 
+type detail struct {
+	Name string
+	Rows [][]string
+}
+
 type refreshData struct {
 	AccessToken      string `json:"accessToken"`
 	RefreshToken     string `json:"refreshToken"`
@@ -112,6 +117,7 @@ func run(storeFlag, filter string, asJSON, verbose bool) error {
 
 	changed := false
 	results := make([]result, 0, len(accounts))
+	details := make([]detail, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
 		if filter != "" && acc.Name != filter {
@@ -154,12 +160,11 @@ func run(storeFlag, filter string, asJSON, verbose bool) error {
 			Packages: len(sum.Packages),
 		})
 		if verbose {
-			fmt.Printf("[%s]\n", acc.Name)
 			rows := make([][]string, 0, len(sum.Packages))
 			for _, p := range sum.Packages {
 				rows = append(rows, []string{p.Code, amount(p.Remain), amount(p.Used), amount(p.Total)})
 			}
-			printTable([]string{"积分包", "剩余", "已用", "额度"}, rows, []bool{false, true, true, true})
+			details = append(details, detail{Name: acc.Name, Rows: rows})
 		}
 	}
 
@@ -184,8 +189,13 @@ func run(storeFlag, filter string, asJSON, verbose bool) error {
 		rows = append(rows, []string{r.Name, r.UID, fmt.Sprintf("%.2f", r.Balance),
 			fmt.Sprintf("%.2f", r.Total), strconv.Itoa(r.Packages)})
 	}
+	fmt.Printf("查询时间：%s\n\n", time.Now().Format("2006-01-02 15:04:05 MST"))
 	printTable([]string{"账号", "uid", "可用积分", "总额度", "积分包数"}, rows,
 		[]bool{false, false, true, true, false})
+	for _, d := range details {
+		fmt.Printf("\n[%s]\n", d.Name)
+		printTable([]string{"积分包", "剩余", "已用", "额度"}, d.Rows, []bool{false, true, true, true})
+	}
 	if failed {
 		os.Exit(1)
 	}
