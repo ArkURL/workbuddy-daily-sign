@@ -133,6 +133,9 @@ refresh), `accessExpiresAt` / `refreshExpiresAt` (epoch seconds), `domain`, opti
 - **Do more tokens mean more credits?** Not necessarily. Check-in is per uid — two tokens for the same uid
   (e.g. desktop and CLI logged into one account) only earn one claim. Check uids with `--list` / `doctor`.
 - **Does one failure block the others?** No. Each account runs independently; failures are named in the Issue.
+- **I also use these accounts in the CLI — will that clash with CI?** Yes. Sharing one refresh token between your CLI and CI
+  triggers server-side reuse detection and revokes the whole session. Give CI its own HOMEs
+  (e.g. `~/.codebuddy-ci/workbuddy`, `~/.codebuddy-ci/second`), log in once each, and never use them interactively.
 - **Cache evicted?** The script falls back to the secret; you only need to re-export if that one expired too.
 - **Will the desktop app get logged out?** No. In practice both sides renew independently: CI keeps running while the app still refreshes and stays logged in.
 - **WorkBuddy changes its API?** The run fails and opens an Issue instead of silently skipping.
