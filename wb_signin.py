@@ -324,8 +324,13 @@ def refresh_state(state):
         raise SignError("NETWORK", "续期请求未能送达（%s），下次运行自动重试"
                         % (body.get("error") or "网络不可达"))
     if code in (401, 403):
+        message = str(dig(body, "msg") or dig(body, "error_msg") or "")
+        if "revoked" in message or "invalid_grant" in message:
+            raise SignError("AUTH_EXPIRED", "该账号的登录会话已被服务端吊销"
+                                            "（refresh token revoked），"
+                                            "请在对应客户端重新登录后重新导出凭据")
         raise SignError("AUTH_EXPIRED", "refreshToken 被服务端拒绝（HTTP %d），"
-                                        "请在本机重新提取凭据" % code)
+                                        "请在对应客户端重新登录后重新提取凭据" % code)
     if not 200 <= code < 300:
         raise SignError("ERROR", "续期接口返回异常（HTTP %d）" % code)
 
@@ -428,7 +433,8 @@ def is_already_checked_in(body):
 
 def auth_failure(code):
     if code == 401:
-        return SignError("AUTH_REJECTED", "服务端拒绝认证（HTTP 401），请在本机重新提取凭据")
+        return SignError("AUTH_REJECTED", "服务端拒绝认证（HTTP 401）：该账号的登录会话可能已失效，"
+                                          "请在对应客户端重新登录后重新导出凭据")
     return SignError("FORBIDDEN", "服务端拒绝操作（HTTP 403），请检查账号状态或活动条件")
 
 
