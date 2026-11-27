@@ -150,15 +150,16 @@ def load_secret_roster():
 
 
 def load_accounts():
-    """返回 [(name, state, source)]：Cache 里的令牌优先，Secret 用来补齐和兜底。"""
+    """返回 [(name, state, source)]：账号名单以 Secret 为准，Cache 只提供同名账号的最新令牌。"""
     cached = []
     path = os.environ.get("WORKBUDDY_STATE", "")
     if path and os.path.isfile(path):
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 cached = _as_roster(json.load(handle))
-        except (OSError, ValueError) as exc:
-            raise SignError("AUTH_ERROR", "状态文件无法读取：%s" % redact(exc))
+        except (OSError, ValueError, SignError):
+            # 缓存是不可信输入：坏了就当没有，Secret 照常可用；下一次成功运行会重写它
+            cached = []
 
     secret_roster, secret_source = load_secret_roster()
     SECRET_STATES.clear()
@@ -166,17 +167,13 @@ def load_accounts():
         SECRET_STATES[item["name"]] = item["state"]
 
     by_name = {item["name"]: item for item in cached}
-    roster = []
-    for item in secret_roster:
-        hit = by_name.get(item["name"])
-        if hit:
-            roster.append({"name": item["name"], "state": hit["state"]})
-        else:
-            roster.append(item)
-
-    for item in cached:
-        if item["name"] not in SECRET_STATES:
-            roster.append(item)
+    if secret_roster:
+        # Secret 是名单的唯一来源：Cache 里多出来的账号（比如已下线/已改名的）不再参与签到
+        roster = [{"name": item["name"],
+                   "state": by_name[item["name"]]["state"] if item["name"] in by_name else item["state"]}
+                  for item in secret_roster]
+    else:
+        roster = cached
 
     if not roster:
         raise SignError("NO_AUTH", "没有任何凭据：请设置 WORKBUDDY_ACCOUNTS Secret"
